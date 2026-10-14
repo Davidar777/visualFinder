@@ -249,7 +249,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        root.addView(arCheck)
+        
 
         val spatialButton = Button(this).apply {
             text = "Spatial Mode (Test)"
@@ -259,9 +259,11 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-        root.addView(spatialButton)
+        
 
         root.addView(tools)
+
+
 
         val lockButton = Button(this).apply {
             text = "Lock: On"
@@ -272,7 +274,31 @@ class MainActivity : ComponentActivity() {
                 this@MainActivity.overlay.clearTracks()
             }
         }
-        root.addView(lockButton)
+        
+
+        val quickControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        arCheck.text = "AR"
+        spatialButton.text = "Spatial"
+        lockButton.text = if (lockDetections) "Lock: On" else "Lock: Off"
+
+        quickControls.addView(
+            arCheck,
+            LinearLayout.LayoutParams(0, dp(40), 1f)
+        )
+        quickControls.addView(
+            spatialButton,
+            LinearLayout.LayoutParams(0, dp(40), 1.5f)
+        )
+        quickControls.addView(
+            lockButton,
+            LinearLayout.LayoutParams(0, dp(40), 1f)
+        )
+
+        root.addView(quickControls)
 
         val exposureRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         exposureRow.addView(TextView(this).apply {
