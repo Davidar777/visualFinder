@@ -10,23 +10,30 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Bundle
 import android.speech.RecognizerIntent
-import android.view.Gravity
-import android.view.View
-import android.text.TextWatcher
 import android.text.Editable
+import android.text.TextWatcher
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.camera.core.Preview
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
@@ -38,110 +45,270 @@ class MainActivity : ComponentActivity() {
     private lateinit var overlay: BoxOverlay
     private lateinit var query: EditText
     private lateinit var status: TextView
+    private lateinit var counter: TextView
+    private lateinit var flash: Button
+    private lateinit var exposure: SeekBar
+    private var camera: Camera? = null
+    private var torchOn = false
+    @Volatile private var activeTerm = ""
     private val executor = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
-    @Volatile private var activeTerm = ""
-    private fun cleanTerm(text: String): String = text.trim().lowercase()
-        .replace(Regex("^(please\\s+)?(find|locate|look for|search for|where is|where are)\\s+"), "")
-        .replace(Regex("^(my|the|a|an)\\s+"), "").trim()
-    private fun submitSearch(text: String) {
-        activeTerm = cleanTerm(text)
-        status.text = if (activeTerm.isBlank()) "Enter an object to search" else "Searching: $activeTerm"
-        overlay.update(emptyList(), 1, 1)
-    }
     private val detector = ObjectDetection.getClient(
-        ObjectDetectorOptions.Builder().setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
-            .enableClassification().build()
+        ObjectDetectorOptions.Builder()
+            .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
+            .enableMultipleObjects()
+            .enableClassification()
+            .build()
     )
-    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) startCamera() else status.text = "Camera permission required" }
+    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        if (it) startCamera() else status.text = "Camera permission required"
+    }
     private val imagePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) status.text = "Reference image selected. Visual similarity matching is not yet implemented."
+        if (uri != null) status.text = "Reference selected — image matching is not available yet"
     }
     private val voiceLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val words = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            if (!words.isNullOrEmpty()) { query.setText(words.first()); query.setSelection(query.text.length); submitSearch(words.first()) }
+            result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let {
+                query.setText(it)
+                query.setSelection(query.text.length)
+            }
         }
     }
+
+    private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+    private fun cleanTerm(text: String): String = text.trim().lowercase()
+        .replace(Regex("^(please\\s+)?(find|locate|look for|search for|where is|where are)\\s+"), "")
+        .replace(Regex("^(my|the|a|an)\\s+"), "").trim()
+
+    private fun submitSearch(text: String) {
+        activeTerm = cleanTerm(text)
+        overlay.update(emptyList(), 1, 1)
+        status.text = if (activeTerm.isEmpty()) "Type or speak to search • red = other objects" else "Searching: $activeTerm"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(12, 8, 12, 8) }
-        val title = TextView(this).apply { text = "VISUAL FINDER  •  OFFLINE"; setTextColor(Color.WHITE); textSize = 16f; setPadding(8,8,8,8) }
+        window.statusBarColor = Color.rgb(9, 15, 21)
+        window.navigationBarColor = Color.rgb(9, 15, 21)
+        val bg = Color.rgb(9, 15, 21)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+            setPadding(dp(10), 0, dp(10), 0)
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(dp(10), bars.top + dp(4), dp(10), bars.bottom + dp(4))
+            insets
+        }
+        val title = TextView(this).apply {
+            text = "VISUAL FINDER   •   OFFLINE"
+            setTextColor(Color.WHITE)
+            textSize = 17f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(4), 0, dp(8))
+        }
         root.addView(title)
-        val cameraContainer = android.widget.FrameLayout(this)
+
+        val cameraContainer = FrameLayout(this)
         preview = PreviewView(this).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
         overlay = BoxOverlay()
-        cameraContainer.addView(preview, android.widget.FrameLayout.LayoutParams(-1,-1))
-        cameraContainer.addView(overlay, android.widget.FrameLayout.LayoutParams(-1,-1))
-        root.addView(cameraContainer, LinearLayout.LayoutParams(-1,0,1f))
-        query = EditText(this).apply { hint = "Find an object..."; setSingleLine(true); textSize = 16f; setTextColor(Color.WHITE); setHintTextColor(Color.LTGRAY); imeOptions = EditorInfo.IME_ACTION_SEARCH; setOnEditorActionListener { _, _, _ -> submitSearch(text.toString()); false }; addTextChangedListener(object: TextWatcher { override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {} ; override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { submitSearch(s?.toString().orEmpty()) }; override fun afterTextChanged(s: Editable?) {} }) }
-        root.addView(query)
-        val controls = LinearLayout(this).apply { gravity = Gravity.CENTER }
-        val speak = Button(this).apply { text = "Speak"; setOnClickListener { try { voiceLauncher.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)) } catch (_:Exception) { status.text = "Speech recognizer unavailable" } } }
-        val photo = Button(this).apply { text = "Reference"; setOnClickListener { imagePicker.launch("image/*") } }
-        controls.addView(speak, LinearLayout.LayoutParams(0, -2, 1f)); controls.addView(photo, LinearLayout.LayoutParams(0, -2, 1f)); root.addView(controls)
-        status = TextView(this).apply { text = "Enter an object to search"; setTextColor(Color.WHITE); textSize = 14f; setPadding(8,6,8,8) }
+        cameraContainer.addView(preview, FrameLayout.LayoutParams(-1, -1))
+        cameraContainer.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        root.addView(cameraContainer, LinearLayout.LayoutParams(-1, 0, 1f))
+        cameraContainer.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_UP) {
+                camera?.let { cam ->
+                    val point = preview.meteringPointFactory.createPoint(event.x, event.y)
+                    val action = androidx.camera.core.FocusMeteringAction.Builder(point).build()
+                    cam.cameraControl.startFocusAndMetering(action)
+                }
+                true
+            } else true
+        }
+
+        val searchRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        query = EditText(this).apply {
+            hint = "Find an object..."
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.LTGRAY)
+            textSize = 16f
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { submitSearch(s?.toString().orEmpty()) }
+                override fun afterTextChanged(s: Editable?) {}
+            })
+        }
+        searchRow.addView(query, LinearLayout.LayoutParams(0, dp(52), 1f))
+        val speak = Button(this).apply {
+            text = "🎤"
+            contentDescription = "Speak search"
+            setOnClickListener {
+                try {
+                    voiceLauncher.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM))
+                } catch (_: Exception) { status.text = "Speech recognition unavailable" }
+            }
+        }
+        searchRow.addView(speak, LinearLayout.LayoutParams(dp(62), dp(52)))
+        val photo = Button(this).apply {
+            text = "▧"
+            contentDescription = "Choose reference image"
+            setOnClickListener { imagePicker.launch("image/*") }
+        }
+        searchRow.addView(photo, LinearLayout.LayoutParams(dp(58), dp(52)))
+        root.addView(searchRow)
+
+        val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        flash = Button(this).apply {
+            text = "Flash OFF"
+            setOnClickListener {
+                val cam = camera ?: return@setOnClickListener
+                if (!cam.cameraInfo.hasFlashUnit()) { status.text = "Flashlight unavailable"; return@setOnClickListener }
+                torchOn = !torchOn
+                cam.cameraControl.enableTorch(torchOn)
+                text = if (torchOn) "Flash ON" else "Flash OFF"
+            }
+        }
+        tools.addView(flash, LinearLayout.LayoutParams(0, dp(49), 1f))
+        val minus = Button(this).apply { text = "−"; setOnClickListener { adjustZoom(-0.25f) } }
+        tools.addView(minus, LinearLayout.LayoutParams(dp(48), dp(49)))
+        val plus = Button(this).apply { text = "+"; setOnClickListener { adjustZoom(0.25f) } }
+        tools.addView(plus, LinearLayout.LayoutParams(dp(48), dp(49)))
+        root.addView(tools)
+
+        val exposureRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        exposureRow.addView(TextView(this).apply {
+            text = "Exposure"; setTextColor(Color.WHITE); textSize = 13f
+        })
+        exposure = SeekBar(this).apply {
+            max = 100; progress = 50
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    camera?.let { cam ->
+                        val range = cam.cameraInfo.exposureState.exposureCompensationRange
+                        if (cam.cameraInfo.exposureState.isExposureCompensationSupported) {
+                            val index = range.lower + ((range.upper - range.lower) * progress / 100f).toInt()
+                            cam.cameraControl.setExposureCompensationIndex(index.coerceIn(range.lower, range.upper))
+                        }
+                    }
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) {}
+                override fun onStopTrackingTouch(bar: SeekBar?) {}
+            })
+        }
+        exposureRow.addView(exposure, LinearLayout.LayoutParams(0, dp(42), 1f))
+        root.addView(exposureRow)
+
+        counter = TextView(this).apply {
+            text = "Detected: 0  •  Matches: 0"
+            setTextColor(Color.rgb(90, 220, 170))
+            textSize = 13f
+        }
+        root.addView(counter)
+        status = TextView(this).apply {
+            text = "Type or speak to search • red = other objects"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            maxLines = 2
+            setPadding(0, dp(4), 0, dp(5))
+        }
         root.addView(status)
         setContentView(root)
-        if (ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera() else cameraPermission.launch(Manifest.permission.CAMERA)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
+        else cameraPermission.launch(Manifest.permission.CAMERA)
     }
+
+    private fun adjustZoom(delta: Float) {
+        val cam = camera ?: return
+        val zoom = cam.cameraInfo.zoomState.value ?: return
+        cam.cameraControl.setZoomRatio((zoom.zoomRatio + delta).coerceIn(zoom.minZoomRatio, zoom.maxZoomRatio))
+    }
+
     private fun startCamera() {
-        val providerFuture = ProcessCameraProvider.getInstance(this)
-        providerFuture.addListener({
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
             try {
-                val provider = providerFuture.get()
+                val provider = future.get()
                 val p = Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }
-                val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-                analysis.setAnalyzer(executor) { proxy ->
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                analysis.setAnalyzer(executor) { proxy: ImageProxy ->
                     val media = proxy.image
-                    if (media == null || !busy.compareAndSet(false,true)) { proxy.close(); return@setAnalyzer }
-                    val input = InputImage.fromMediaImage(media, proxy.imageInfo.rotationDegrees)
-                    detector.process(input).addOnSuccessListener { objects ->
-                        val term = activeTerm
-                        val results = objects.map { obj ->
-                            val labels = obj.labels.map { it.text }
-                            val matched = term.isNotBlank() && labels.any { label ->
-                                label.lowercase().contains(term) ||
-                                term.contains(label.lowercase())
+                    if (media == null || !busy.compareAndSet(false, true)) {
+                        proxy.close(); return@setAnalyzer
+                    }
+                    val rotation = proxy.imageInfo.rotationDegrees
+                    val input = InputImage.fromMediaImage(media, rotation)
+                    detector.process(input)
+                        .addOnSuccessListener(ContextCompat.getMainExecutor(this)) { objects ->
+                            val term = activeTerm
+                            val results = objects.map { obj ->
+                                val labels = obj.labels.map { it.text }
+                                val match = term.isNotBlank() && labels.any { label ->
+                                    label.lowercase().contains(term) || term.contains(label.lowercase())
+                                }
+                                Detection(RectF(obj.boundingBox), labels.firstOrNull() ?: "Unknown", match)
                             }
-                            Detection(
-                                RectF(obj.boundingBox),
-                                labels.firstOrNull() ?: "Unknown",
-                                matched
-                            )
+                            // ML Kit bounding boxes are in the rotated InputImage coordinate space.
+                            val w = if (rotation == 90 || rotation == 270) input.height else input.width
+                            val h = if (rotation == 90 || rotation == 270) input.width else input.height
+                            overlay.update(results, w, h)
+                            val matches = results.count { it.matched }
+                            counter.text = "Detected: ${results.size}  •  Matches: $matches"
+                            status.text = when {
+                                term.isBlank() -> "Type an object name • red = detected objects"
+                                matches > 0 -> "Possible match: $term"
+                                else -> "Searching: $term (limited offline categories)"
+                            }
                         }
-                        overlay.update(results, input.width, input.height)
-                        status.text = if (term.isBlank()) "Enter an object to search" else if (results.isEmpty()) "Searching for $term (limited offline categories)" else "${results.size} possible match(es): $term"
-                    }.addOnFailureListener { status.text = "Detector error" }
+                        .addOnFailureListener(ContextCompat.getMainExecutor(this)) { status.text = "Detector error: ${it.message}" }
                         .addOnCompleteListener { busy.set(false); proxy.close() }
                 }
-                provider.unbindAll(); provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA,p,analysis)
+                provider.unbindAll()
+                camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, p, analysis)
+                if (camera?.cameraInfo?.exposureState?.isExposureCompensationSupported != true) exposure.isEnabled = false
             } catch (e: Exception) { status.text = "Camera error: ${e.message}" }
-        },ContextCompat.getMainExecutor(this))
+        }, ContextCompat.getMainExecutor(this))
     }
-    override fun onDestroy() { super.onDestroy(); detector.close(); executor.shutdown() }
-    data class Detection(val rect:RectF,val label:String,val matched:Boolean)
-    inner class BoxOverlay: View(this) {
-        private var detections:List<Detection> = emptyList()
-        private var imgW=1; private var imgH=1
-        private val pen = Paint().apply { color=Color.GREEN; strokeWidth=5f; style=Paint.Style.STROKE }
-        private val words = Paint().apply { color=Color.GREEN; textSize=38f; style=Paint.Style.FILL }
-        fun update(d:List<Detection>,w:Int,h:Int) { detections=d;imgW=w;imgH=h;invalidate() }
-        override fun onDraw(canvas:Canvas) {
+
+    override fun onDestroy() {
+        super.onDestroy()
+        detector.close()
+        executor.shutdown()
+    }
+
+    data class Detection(val rect: RectF, val label: String, val matched: Boolean)
+
+    inner class BoxOverlay : View(this) {
+        private var detections: List<Detection> = emptyList()
+        private var imgW = 1
+        private var imgH = 1
+        private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = dp(3).toFloat(); style = Paint.Style.STROKE }
+        private val words = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = dp(14).toFloat(); style = Paint.Style.FILL }
+        fun update(d: List<Detection>, w: Int, h: Int) {
+            detections = d
+            imgW = maxOf(w, 1)
+            imgH = maxOf(h, 1)
+            invalidate()
+        }
+        override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            // FIT_CENTER mapping; InputImage dimensions account for rotation differently across devices.
-            // This approximation must be verified on physical device for all rotations.
-            val rotated = imgW > imgH && height > width
-            val iw = if(rotated) imgH.toFloat() else imgW.toFloat()
-            val ih = if(rotated) imgW.toFloat() else imgH.toFloat()
-            val scale = minOf(width/iw,height/ih)
-            val dx=(width-iw*scale)/2; val dy=(height-ih*scale)/2
+            val scale = minOf(width / imgW.toFloat(), height / imgH.toFloat())
+            val dx = (width - imgW * scale) / 2f
+            val dy = (height - imgH * scale) / 2f
             for (d in detections) {
-                pen.color = if (d.matched) Color.GREEN else Color.RED
-                words.color = pen.color
-                val r=d.rect
-                val box=RectF(dx+r.left*scale,dy+r.top*scale,dx+r.right*scale,dy+r.bottom*scale)
-                canvas.drawRect(box,pen);canvas.drawText(d.label,box.left, maxOf(40f,box.top-8f),words)
+                val color = if (d.matched) Color.GREEN else Color.RED
+                pen.color = color
+                words.color = color
+                val r = d.rect
+                val box = RectF(dx + r.left * scale, dy + r.top * scale, dx + r.right * scale, dy + r.bottom * scale)
+                canvas.drawRect(box, pen)
+                canvas.drawText(if (d.matched) "MATCH: ${d.label}" else d.label, box.left, maxOf(words.textSize, box.top - dp(5)), words)
             }
         }
     }
