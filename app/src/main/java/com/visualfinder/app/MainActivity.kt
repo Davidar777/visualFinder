@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Bundle
+import android.os.SystemClock
 import android.speech.RecognizerIntent
 import android.text.Editable
 import android.text.TextWatcher
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var exposure: SeekBar
     private var camera: Camera? = null
     private var torchOn = false
+    private var showAllObjects = true // STABILITY_V06
     @Volatile private var activeTerm = ""
     private val executor = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
@@ -83,7 +85,7 @@ class MainActivity : ComponentActivity() {
 
     private fun submitSearch(text: String) {
         activeTerm = cleanTerm(text)
-        overlay.update(emptyList(), 1, 1)
+        overlay.clearTracks()
         status.text = if (activeTerm.isEmpty()) "Type or speak to search • red = other objects" else "Searching: $activeTerm"
     }
 
@@ -178,6 +180,17 @@ class MainActivity : ComponentActivity() {
         tools.addView(minus, LinearLayout.LayoutParams(dp(48), dp(42)))
         val plus = Button(this).apply { text = "+"; setOnClickListener { adjustZoom(0.25f) } }
         tools.addView(plus, LinearLayout.LayoutParams(dp(48), dp(42)))
+        val modeButton = Button(this).apply {
+            text = "Mode: All"
+            contentDescription = "Switch object highlighting mode"
+            setOnClickListener {
+                showAllObjects = !showAllObjects
+                text = if (showAllObjects) "Mode: All" else "Mode: Matches"
+                overlay.showAll = showAllObjects
+                overlay.invalidate()
+            }
+        }
+        tools.addView(modeButton, LinearLayout.LayoutParams(dp(116), dp(42)))
         root.addView(tools)
 
         val exposureRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
@@ -286,32 +299,83 @@ class MainActivity : ComponentActivity() {
 
     data class Detection(val rect: RectF, val label: String, val matched: Boolean)
 
+    private data class Track(var rect: RectF, var label: String,
+                             var matched: Boolean, var lastSeen: Long)
+
     inner class BoxOverlay : View(this) {
-        private var detections: List<Detection> = emptyList()
+        // Temporal persistence and EMA smoothing reduce single-frame flicker.
+        // These are bounding boxes, NOT object-shaped segmentation masks.
+        var showAll = true
+        private val tracks = mutableListOf<Track>()
         private var imgW = 1
         private var imgH = 1
-        private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = dp(3).toFloat(); style = Paint.Style.STROKE }
-        private val words = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = dp(14).toFloat(); style = Paint.Style.FILL }
+        private val ttlMs = 650L
+        private val alpha = 0.38f
+        private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            strokeWidth = dp(3).toFloat(); style = Paint.Style.STROKE
+        }
+        private val words = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = dp(13).toFloat(); style = Paint.Style.FILL
+        }
+        fun clearTracks() { tracks.clear(); invalidate() }
+        private fun iou(a: RectF, b: RectF): Float {
+            val left = maxOf(a.left, b.left); val top = maxOf(a.top, b.top)
+            val right = minOf(a.right, b.right); val bottom = minOf(a.bottom, b.bottom)
+            val area = maxOf(0f, right-left) * maxOf(0f, bottom-top)
+            val union = a.width()*a.height() + b.width()*b.height() - area
+            return if (union > 0f) area/union else 0f
+        }
         fun update(d: List<Detection>, w: Int, h: Int) {
-            detections = d
-            imgW = maxOf(w, 1)
-            imgH = maxOf(h, 1)
+            val now = SystemClock.elapsedRealtime()
+            if (imgW != maxOf(w,1) || imgH != maxOf(h,1)) tracks.clear()
+            imgW = maxOf(w, 1); imgH = maxOf(h, 1)
+            tracks.removeAll { now-it.lastSeen > ttlMs }
+            val used = mutableSetOf<Int>()
+            for (item in d) {
+                var best = -1; var bestScore = 0.28f
+                for (i in tracks.indices) {
+                    if (i in used) continue
+                    val score = iou(tracks[i].rect, item.rect)
+                    if (score > bestScore) { bestScore = score; best = i }
+                }
+                if (best < 0) {
+                    tracks.add(Track(RectF(item.rect), item.label, item.matched, now))
+                    used.add(tracks.lastIndex)
+                } else {
+                    val t = tracks[best]
+                    t.rect.set(
+                        t.rect.left*(1-alpha)+item.rect.left*alpha,
+                        t.rect.top*(1-alpha)+item.rect.top*alpha,
+                        t.rect.right*(1-alpha)+item.rect.right*alpha,
+                        t.rect.bottom*(1-alpha)+item.rect.bottom*alpha
+                    )
+                    t.label=item.label; t.matched=item.matched; t.lastSeen=now
+                    used.add(best)
+                }
+            }
             invalidate()
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val scale = minOf(width / imgW.toFloat(), height / imgH.toFloat())
-            val dx = (width - imgW * scale) / 2f
-            val dy = (height - imgH * scale) / 2f
-            for (d in detections) {
-                val color = if (d.matched) Color.GREEN else Color.RED
-                pen.color = color
-                words.color = color
-                val r = d.rect
-                val box = RectF(dx + r.left * scale, dy + r.top * scale, dx + r.right * scale, dy + r.bottom * scale)
-                canvas.drawRect(box, pen)
-                canvas.drawText(if (d.matched) "MATCH: ${d.label}" else d.label, box.left, maxOf(words.textSize, box.top - dp(5)), words)
+            val now = SystemClock.elapsedRealtime()
+            tracks.removeAll { now-it.lastSeen > ttlMs }
+            val scale = minOf(width/imgW.toFloat(), height/imgH.toFloat())
+            val dx = (width-imgW*scale)/2f; val dy = (height-imgH*scale)/2f
+            for (t in tracks) {
+                if (!showAll && !t.matched) continue
+                val age = now-t.lastSeen
+                val opacity = if (age < 250) 255 else ((ttlMs-age)*255/(ttlMs-250)).toInt().coerceIn(0,255)
+                val color = if (t.matched) Color.GREEN else Color.RED
+                pen.color=color; pen.alpha=opacity
+                words.color=color; words.alpha=opacity
+                val r=t.rect
+                val box=RectF(dx+r.left*scale,dy+r.top*scale,dx+r.right*scale,dy+r.bottom*scale)
+                canvas.drawRoundRect(box,dp(8).toFloat(),dp(8).toFloat(),pen)
+                canvas.drawText(if(t.matched) "MATCH: ${t.label}" else t.label,
+                    box.left,maxOf(words.textSize,box.top-dp(5)),words)
             }
+            if (tracks.isNotEmpty()) postInvalidateDelayed(80L)
         }
     }
+
 }
