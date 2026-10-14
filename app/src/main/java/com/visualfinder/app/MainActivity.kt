@@ -186,8 +186,8 @@ class MainActivity : ComponentActivity() {
             setOnClickListener {
                 showAllObjects = !showAllObjects
                 text = if (showAllObjects) "Mode: All" else "Mode: Matches"
-                overlay.showAll = showAllObjects
-                overlay.invalidate()
+                this@MainActivity.overlay.showAll = showAllObjects
+                this@MainActivity.overlay.invalidate()
             }
         }
         tools.addView(modeButton, LinearLayout.LayoutParams(dp(116), dp(42)))
