@@ -4,7 +4,7 @@ name: Build Visual Finder APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, feature/spatial-memory-v07]
 
 jobs:
   build:

@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.os.Bundle
+import com.google.ar.core.ArCoreApk
 import android.os.SystemClock
 import android.speech.RecognizerIntent
 import android.text.Editable
@@ -191,6 +192,34 @@ class MainActivity : ComponentActivity() {
             }
         }
         tools.addView(modeButton, LinearLayout.LayoutParams(dp(116), dp(42)))
+
+        val arCheck = Button(this).apply {
+            text = "Check AR"
+            setOnClickListener {
+                this@MainActivity.status.text = "Checking ARCore..."
+                try {
+                    ArCoreApk.getInstance().checkAvailabilityAsync(
+                        this@MainActivity
+                    ) { result ->
+                        this@MainActivity.status.text =
+                            when (result) {
+                                ArCoreApk.Availability.SUPPORTED_INSTALLED ->
+                                    "ARCore supported and installed"
+                                ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED ->
+                                    "ARCore supported; installation needed"
+                                ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD ->
+                                    "ARCore supported; update needed"
+                                else ->
+                                    "ARCore status: ${result.name}"
+                            }
+                    }
+                } catch (e: Exception) {
+                    this@MainActivity.status.text =
+                        "ARCore check failed: ${e.javaClass.simpleName}"
+                }
+            }
+        }
+        root.addView(arCheck)
         root.addView(tools)
 
         val exposureRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
