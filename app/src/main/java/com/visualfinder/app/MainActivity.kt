@@ -98,11 +98,17 @@ class MainActivity : ComponentActivity() {
                     val input = InputImage.fromMediaImage(media, proxy.imageInfo.rotationDegrees)
                     detector.process(input).addOnSuccessListener { objects ->
                         val term = activeTerm
-                        val results = objects.mapNotNull { obj ->
+                        val results = objects.map { obj ->
                             val labels = obj.labels.map { it.text }
-                            // Generic ML Kit categories are limited; this is not arbitrary product matching.
-                            if (term.isNotBlank() && labels.any { label -> label.lowercase().contains(term) || term.contains(label.lowercase()) })
-                                Detection(RectF(obj.boundingBox), labels.firstOrNull() ?: "Object") else null
+                            val matched = term.isNotBlank() && labels.any { label ->
+                                label.lowercase().contains(term) ||
+                                term.contains(label.lowercase())
+                            }
+                            Detection(
+                                RectF(obj.boundingBox),
+                                labels.firstOrNull() ?: "Unknown",
+                                matched
+                            )
                         }
                         overlay.update(results, input.width, input.height)
                         status.text = if (term.isBlank()) "Enter an object to search" else if (results.isEmpty()) "Searching for $term (limited offline categories)" else "${results.size} possible match(es): $term"
@@ -114,7 +120,7 @@ class MainActivity : ComponentActivity() {
         },ContextCompat.getMainExecutor(this))
     }
     override fun onDestroy() { super.onDestroy(); detector.close(); executor.shutdown() }
-    data class Detection(val rect:RectF,val label:String)
+    data class Detection(val rect:RectF,val label:String,val matched:Boolean)
     inner class BoxOverlay: View(this) {
         private var detections:List<Detection> = emptyList()
         private var imgW=1; private var imgH=1
@@ -131,6 +137,8 @@ class MainActivity : ComponentActivity() {
             val scale = minOf(width/iw,height/ih)
             val dx=(width-iw*scale)/2; val dy=(height-ih*scale)/2
             for (d in detections) {
+                pen.color = if (d.matched) Color.GREEN else Color.RED
+                words.color = pen.color
                 val r=d.rect
                 val box=RectF(dx+r.left*scale,dy+r.top*scale,dx+r.right*scale,dy+r.bottom*scale)
                 canvas.drawRect(box,pen);canvas.drawText(d.label,box.left, maxOf(40f,box.top-8f),words)
