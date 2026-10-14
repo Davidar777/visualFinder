@@ -453,12 +453,7 @@ class MainActivity : ComponentActivity() {
                     used.add(tracks.lastIndex)
                 } else {
                     val t = tracks[best]
-                    t.rect.set(
-                        t.rect.left*(1-alpha)+item.rect.left*alpha,
-                        t.rect.top*(1-alpha)+item.rect.top*alpha,
-                        t.rect.right*(1-alpha)+item.rect.right*alpha,
-                        t.rect.bottom*(1-alpha)+item.rect.bottom*alpha
-                    )
+                    t.rect.set(item.rect)
                     t.label=item.label; t.matched=item.matched; t.lastSeen=now
                     used.add(best)
                 }
