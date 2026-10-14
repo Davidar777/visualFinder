@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var exposure: SeekBar
     private var camera: Camera? = null
     private var torchOn = false
+    private var lockDetections = true
     private var showAllObjects = true // STABILITY_V06
     @Volatile private var activeTerm = ""
     private val executor = Executors.newSingleThreadExecutor()
@@ -177,10 +178,39 @@ class MainActivity : ComponentActivity() {
             }
         }
         tools.addView(flash, LinearLayout.LayoutParams(0, dp(42), 1f))
-        val minus = Button(this).apply { text = "−"; setOnClickListener { adjustZoom(-0.25f) } }
-        tools.addView(minus, LinearLayout.LayoutParams(dp(48), dp(42)))
-        val plus = Button(this).apply { text = "+"; setOnClickListener { adjustZoom(0.25f) } }
-        tools.addView(plus, LinearLayout.LayoutParams(dp(48), dp(42)))
+
+        val zoomLabel = TextView(this).apply {
+            text = "Zoom 1.0x"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+        }
+        tools.addView(zoomLabel)
+
+        val zoomSlider = SeekBar(this).apply {
+            max = 1000
+            progress = 0
+            contentDescription = "Camera zoom"
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    bar: SeekBar?, progress: Int, fromUser: Boolean
+                ) {
+                    if (!fromUser) return
+                    val cam = camera ?: return
+                    val state = cam.cameraInfo.zoomState.value ?: return
+                    val ratio = state.minZoomRatio +
+                        (state.maxZoomRatio - state.minZoomRatio) *
+                        (progress / 1000f)
+                    cam.cameraControl.setZoomRatio(ratio)
+                    zoomLabel.text = "Zoom %.1fx".format(ratio)
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) {}
+                override fun onStopTrackingTouch(bar: SeekBar?) {}
+            })
+        }
+        tools.addView(
+            zoomSlider,
+            LinearLayout.LayoutParams(0, dp(42), 2f)
+        )
         val modeButton = Button(this).apply {
             text = "Mode: All"
             contentDescription = "Switch object highlighting mode"
@@ -232,6 +262,17 @@ class MainActivity : ComponentActivity() {
         root.addView(spatialButton)
 
         root.addView(tools)
+
+        val lockButton = Button(this).apply {
+            text = "Lock: On"
+            setOnClickListener {
+                lockDetections = !lockDetections
+                text = if (lockDetections) "Lock: On" else "Lock: Off"
+                this@MainActivity.overlay.lockMemory = lockDetections
+                this@MainActivity.overlay.clearTracks()
+            }
+        }
+        root.addView(lockButton)
 
         val exposureRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         exposureRow.addView(TextView(this).apply {
@@ -346,6 +387,7 @@ class MainActivity : ComponentActivity() {
         // Temporal persistence and EMA smoothing reduce single-frame flicker.
         // These are bounding boxes, NOT object-shaped segmentation masks.
         var showAll = true
+        var lockMemory = true
         private val tracks = mutableListOf<Track>()
         private var imgW = 1
         private var imgH = 1
@@ -369,12 +411,14 @@ class MainActivity : ComponentActivity() {
             val now = SystemClock.elapsedRealtime()
             if (imgW != maxOf(w,1) || imgH != maxOf(h,1)) tracks.clear()
             imgW = maxOf(w, 1); imgH = maxOf(h, 1)
-            tracks.removeAll { now-it.lastSeen > ttlMs }
+            if (!lockMemory) {
+                tracks.removeAll { now-it.lastSeen > ttlMs }
+            }
             val used = mutableSetOf<Int>()
             for (item in d) {
                 var best = -1; var bestScore = 0.28f
                 for (i in tracks.indices) {
-                    if (i in used) continue
+                    if (i in used || now - tracks[i].lastSeen > ttlMs) continue
                     val score = iou(tracks[i].rect, item.rect)
                     if (score > bestScore) { bestScore = score; best = i }
                 }
@@ -393,16 +437,23 @@ class MainActivity : ComponentActivity() {
                     used.add(best)
                 }
             }
+            if (tracks.size > 100) {
+                tracks.sortByDescending { it.lastSeen }
+                tracks.subList(100, tracks.size).clear()
+            }
             invalidate()
         }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val now = SystemClock.elapsedRealtime()
-            tracks.removeAll { now-it.lastSeen > ttlMs }
+            if (!lockMemory) {
+                tracks.removeAll { now-it.lastSeen > ttlMs }
+            }
             val scale = minOf(width/imgW.toFloat(), height/imgH.toFloat())
             val dx = (width-imgW*scale)/2f; val dy = (height-imgH*scale)/2f
             for (t in tracks) {
                 if (!showAll && !t.matched) continue
+                if (now - t.lastSeen > ttlMs) continue
                 val age = now-t.lastSeen
                 val opacity = if (age < 250) 255 else ((ttlMs-age)*255/(ttlMs-250)).toInt().coerceIn(0,255)
                 val color = if (t.matched) Color.GREEN else Color.RED
