@@ -220,6 +220,17 @@ class MainActivity : ComponentActivity() {
             }
         }
         root.addView(arCheck)
+
+        val spatialButton = Button(this).apply {
+            text = "Spatial Mode (Test)"
+            setOnClickListener {
+                startActivity(
+                    Intent(this@MainActivity, SpatialActivity::class.java)
+                )
+            }
+        }
+        root.addView(spatialButton)
+
         root.addView(tools)
 
         val exposureRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
