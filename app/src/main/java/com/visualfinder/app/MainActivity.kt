@@ -28,6 +28,7 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import android.util.Size
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -102,11 +103,11 @@ class MainActivity : ComponentActivity() {
             insets
         }
         val title = TextView(this).apply {
-            text = "VISUAL FINDER   •   OFFLINE"
+            text = "Visual Finder  •  Offline"
             setTextColor(Color.WHITE)
-            textSize = 17f
+            textSize = 15f
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(4), 0, dp(8))
+            setPadding(dp(4), dp(2), 0, dp(4))
         }
         root.addView(title)
 
@@ -141,7 +142,7 @@ class MainActivity : ComponentActivity() {
                 override fun afterTextChanged(s: Editable?) {}
             })
         }
-        searchRow.addView(query, LinearLayout.LayoutParams(0, dp(52), 1f))
+        searchRow.addView(query, LinearLayout.LayoutParams(0, dp(44), 1f))
         val speak = Button(this).apply {
             text = "🎤"
             contentDescription = "Speak search"
@@ -152,31 +153,31 @@ class MainActivity : ComponentActivity() {
                 } catch (_: Exception) { status.text = "Speech recognition unavailable" }
             }
         }
-        searchRow.addView(speak, LinearLayout.LayoutParams(dp(62), dp(52)))
+        searchRow.addView(speak, LinearLayout.LayoutParams(dp(52), dp(44)))
         val photo = Button(this).apply {
             text = "▧"
             contentDescription = "Choose reference image"
             setOnClickListener { imagePicker.launch("image/*") }
         }
-        searchRow.addView(photo, LinearLayout.LayoutParams(dp(58), dp(52)))
+        searchRow.addView(photo, LinearLayout.LayoutParams(dp(52), dp(44)))
         root.addView(searchRow)
 
         val tools = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         flash = Button(this).apply {
-            text = "Flash OFF"
+            text = "Flash: Off"
             setOnClickListener {
                 val cam = camera ?: return@setOnClickListener
                 if (!cam.cameraInfo.hasFlashUnit()) { status.text = "Flashlight unavailable"; return@setOnClickListener }
                 torchOn = !torchOn
                 cam.cameraControl.enableTorch(torchOn)
-                text = if (torchOn) "Flash ON" else "Flash OFF"
+                text = if (torchOn) "Flash: On" else "Flash: Off"
             }
         }
-        tools.addView(flash, LinearLayout.LayoutParams(0, dp(49), 1f))
+        tools.addView(flash, LinearLayout.LayoutParams(0, dp(42), 1f))
         val minus = Button(this).apply { text = "−"; setOnClickListener { adjustZoom(-0.25f) } }
-        tools.addView(minus, LinearLayout.LayoutParams(dp(48), dp(49)))
+        tools.addView(minus, LinearLayout.LayoutParams(dp(48), dp(42)))
         val plus = Button(this).apply { text = "+"; setOnClickListener { adjustZoom(0.25f) } }
-        tools.addView(plus, LinearLayout.LayoutParams(dp(48), dp(49)))
+        tools.addView(plus, LinearLayout.LayoutParams(dp(48), dp(42)))
         root.addView(tools)
 
         val exposureRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
@@ -200,7 +201,7 @@ class MainActivity : ComponentActivity() {
                 override fun onStopTrackingTouch(bar: SeekBar?) {}
             })
         }
-        exposureRow.addView(exposure, LinearLayout.LayoutParams(0, dp(42), 1f))
+        exposureRow.addView(exposure, LinearLayout.LayoutParams(0, dp(32), 1f))
         root.addView(exposureRow)
 
         counter = TextView(this).apply {
@@ -235,6 +236,7 @@ class MainActivity : ComponentActivity() {
                 val provider = future.get()
                 val p = Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }
                 val analysis = ImageAnalysis.Builder()
+                    .setTargetResolution(Size(1280, 720))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                 analysis.setAnalyzer(executor) { proxy: ImageProxy ->
@@ -255,8 +257,8 @@ class MainActivity : ComponentActivity() {
                                 Detection(RectF(obj.boundingBox), labels.firstOrNull() ?: "Unknown", match)
                             }
                             // ML Kit bounding boxes are in the rotated InputImage coordinate space.
-                            val w = if (rotation == 90 || rotation == 270) input.height else input.width
-                            val h = if (rotation == 90 || rotation == 270) input.width else input.height
+                            val w = if (rotation == 90 || rotation == 270) proxy.height else proxy.width
+                            val h = if (rotation == 90 || rotation == 270) proxy.width else proxy.height
                             overlay.update(results, w, h)
                             val matches = results.count { it.matched }
                             counter.text = "Detected: ${results.size}  •  Matches: $matches"
