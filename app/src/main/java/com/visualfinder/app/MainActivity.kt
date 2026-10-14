@@ -12,6 +12,9 @@ import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.view.Gravity
 import android.view.View
+import android.text.TextWatcher
+import android.text.Editable
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -37,6 +40,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private val executor = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
+    @Volatile private var activeTerm = ""
+    private fun cleanTerm(text: String): String = text.trim().lowercase()
+        .replace(Regex("^(please\\s+)?(find|locate|look for|search for|where is|where are)\\s+"), "")
+        .replace(Regex("^(my|the|a|an)\\s+"), "").trim()
+    private fun submitSearch(text: String) {
+        activeTerm = cleanTerm(text)
+        status.text = if (activeTerm.isBlank()) "Enter an object to search" else "Searching: $activeTerm"
+        overlay.update(emptyList(), 1, 1)
+    }
     private val detector = ObjectDetection.getClient(
         ObjectDetectorOptions.Builder().setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
             .enableClassification().build()
@@ -48,13 +60,13 @@ class MainActivity : ComponentActivity() {
     private val voiceLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val words = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            if (!words.isNullOrEmpty()) query.setText(words.first())
+            if (!words.isNullOrEmpty()) { query.setText(words.first()); query.setSelection(query.text.length); submitSearch(words.first()) }
         }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK) }
-        val title = TextView(this).apply { text = "VISUAL FINDER  •  OFFLINE"; setTextColor(Color.WHITE); textSize = 18f; setPadding(18,18,18,18) }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(12, 8, 12, 8) }
+        val title = TextView(this).apply { text = "VISUAL FINDER  •  OFFLINE"; setTextColor(Color.WHITE); textSize = 16f; setPadding(8,8,8,8) }
         root.addView(title)
         val cameraContainer = android.widget.FrameLayout(this)
         preview = PreviewView(this).apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
@@ -62,13 +74,13 @@ class MainActivity : ComponentActivity() {
         cameraContainer.addView(preview, android.widget.FrameLayout.LayoutParams(-1,-1))
         cameraContainer.addView(overlay, android.widget.FrameLayout.LayoutParams(-1,-1))
         root.addView(cameraContainer, LinearLayout.LayoutParams(-1,0,1f))
-        query = EditText(this).apply { hint = "Find e.g. food, shoes, bag"; setSingleLine(true); setTextColor(Color.WHITE); setHintTextColor(Color.LTGRAY) }
+        query = EditText(this).apply { hint = "Find an object..."; setSingleLine(true); textSize = 16f; setTextColor(Color.WHITE); setHintTextColor(Color.LTGRAY); imeOptions = EditorInfo.IME_ACTION_SEARCH; setOnEditorActionListener { _, _, _ -> submitSearch(text.toString()); false }; addTextChangedListener(object: TextWatcher { override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {} ; override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { submitSearch(s?.toString().orEmpty()) }; override fun afterTextChanged(s: Editable?) {} }) }
         root.addView(query)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER }
         val speak = Button(this).apply { text = "Speak"; setOnClickListener { try { voiceLauncher.launch(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)) } catch (_:Exception) { status.text = "Speech recognizer unavailable" } } }
         val photo = Button(this).apply { text = "Reference"; setOnClickListener { imagePicker.launch("image/*") } }
-        controls.addView(speak); controls.addView(photo); root.addView(controls)
-        status = TextView(this).apply { text = "Looking for visible objects"; setTextColor(Color.WHITE); setPadding(16,8,16,18) }
+        controls.addView(speak, LinearLayout.LayoutParams(0, -2, 1f)); controls.addView(photo, LinearLayout.LayoutParams(0, -2, 1f)); root.addView(controls)
+        status = TextView(this).apply { text = "Enter an object to search"; setTextColor(Color.WHITE); textSize = 14f; setPadding(8,6,8,8) }
         root.addView(status)
         setContentView(root)
         if (ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera() else cameraPermission.launch(Manifest.permission.CAMERA)
@@ -85,15 +97,15 @@ class MainActivity : ComponentActivity() {
                     if (media == null || !busy.compareAndSet(false,true)) { proxy.close(); return@setAnalyzer }
                     val input = InputImage.fromMediaImage(media, proxy.imageInfo.rotationDegrees)
                     detector.process(input).addOnSuccessListener { objects ->
-                        val term = query.text.toString().trim().lowercase()
+                        val term = activeTerm
                         val results = objects.mapNotNull { obj ->
                             val labels = obj.labels.map { it.text }
                             // Generic ML Kit categories are limited; this is not arbitrary product matching.
-                            if (term.isBlank() || labels.any { label -> label.lowercase().contains(term) || term.contains(label.lowercase()) })
+                            if (term.isNotBlank() && labels.any { label -> label.lowercase().contains(term) || term.contains(label.lowercase()) })
                                 Detection(RectF(obj.boundingBox), labels.firstOrNull() ?: "Object") else null
                         }
                         overlay.update(results, input.width, input.height)
-                        status.text = if (results.isEmpty()) "No matching category detected" else "${results.size} possible match(es)"
+                        status.text = if (term.isBlank()) "Enter an object to search" else if (results.isEmpty()) "Searching for $term (limited offline categories)" else "${results.size} possible match(es): $term"
                     }.addOnFailureListener { status.text = "Detector error" }
                         .addOnCompleteListener { busy.set(false); proxy.close() }
                 }
